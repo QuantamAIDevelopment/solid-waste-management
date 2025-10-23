@@ -50,43 +50,67 @@ export DATABASE_URL="postgresql://user:password@localhost:5432/waste_db"
 
 3. Run the system:
 ```bash
-python main.py
+python main.py --api --port 8081
 ```
 
-The API will be available at `http://localhost:8000` with Swagger UI at `http://localhost:8000/docs`.
+The API will be available at `http://localhost:8081` with Swagger UI at `http://localhost:8081/docs`.
 
 ## API Usage
 
-### 1. Upload Files
+### 1. Upload Files and Optimize Routes
 ```bash
-curl -X POST "http://localhost:8000/upload" \
-  -F "ward_geojson=@ward_boundaries.geojson" \
-  -F "roads_geojson=@road_network.geojson" \
-  -F "houses_geojson=@houses.geojson" \
+curl -X POST "http://localhost:8081/optimize-routes" \
+  -F "roads_file=@roads.geojson" \
+  -F "buildings_file=@buildings.geojson" \
+  -F "ward_geojson=@ward.geojson" \
+  -F "ward_no=1" \
   -F "vehicles_csv=@vehicles.csv"
 ```
 
-### 2. Compute Routes
+### 2. Get Cluster Roads with Coordinates
 ```bash
-curl -X POST "http://localhost:8000/compute_routes" \
-  -H "Content-Type: application/json" \
-  -d '{"upload_id": "your-upload-id"}'
+curl "http://localhost:8081/cluster/0"
 ```
 
-### 3. Get Routes
-```bash
-curl "http://localhost:8000/routes/{upload_id}"
+**Response:**
+```json
+{
+  "cluster_id": 0,
+  "vehicle_info": {
+    "vehicle_id": "V001",
+    "vehicle_type": "truck",
+    "status": "active",
+    "capacity": 1000
+  },
+  "buildings_count": 15,
+  "roads": [
+    {
+      "start_coordinate": {"longitude": 77.123, "latitude": 12.456},
+      "end_coordinate": {"longitude": 77.124, "latitude": 12.457},
+      "distance_meters": 125.5
+    }
+  ],
+  "total_road_segments": 8,
+  "cluster_bounds": {
+    "min_longitude": 77.120,
+    "max_longitude": 77.130,
+    "min_latitude": 12.450,
+    "max_latitude": 12.460
+  }
+}
 ```
 
-### 4. Mark Vehicle Unavailable
+### 3. Get Live Vehicle Data
 ```bash
-curl -X POST "http://localhost:8000/vehicle/{vehicle_id}/mark_unavailable" \
-  -H "Content-Type: application/json" \
-  -d '{"upload_id": "your-upload-id", "timestamp": "2024-01-01T10:00:00"}'
+curl "http://localhost:8081/api/vehicles/live"
 ```
 
-### 5. View Map Preview
-Navigate to: `http://localhost:8000/preview/{upload_id}`
+### 4. View Interactive Maps
+- Route Map: `http://localhost:8081/generate-map/route_map`
+- Cluster Analysis: `http://localhost:8081/generate-map/cluster_analysis`
+
+### 5. API Documentation
+Swagger UI: `http://localhost:8081/docs`
 
 ## Input File Formats
 

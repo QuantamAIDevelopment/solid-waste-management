@@ -195,19 +195,23 @@ class VehicleService:
     
     def _standardize_vehicle_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Standardize vehicle data column names and format."""
-        # Common column mappings
+        # Preserve all live API fields and add mappings
+        live_api_fields = ['vehicleId', 'vehicleNo', 'driverName', 'imeiN', 'phoneNo', 'wardNo', 'vehicleType', 'department', 'timestamp']
+        
+        # Keep original fields from API
+        for field in live_api_fields:
+            if field in df.columns:
+                continue  # Keep as-is
+        
+        # Add legacy mappings for compatibility
         column_mappings = {
             'id': 'vehicle_id',
-            'vehicleId': 'vehicle_id',
-            'vehicleNo': 'vehicle_id',
             'vehicle_number': 'vehicle_id',
             'registration_number': 'vehicle_id',
-            'wardNo': 'ward_no',
             'wardNumber': 'ward_no',
             'name': 'vehicle_name',
             'vehicleName': 'vehicle_name',
             'type': 'vehicle_type',
-            'vehicleType': 'vehicle_type',
             'capacity': 'capacity',
             'vehicleCapacity': 'capacity',
             'location': 'location',
@@ -227,7 +231,13 @@ class VehicleService:
         for col in required_columns:
             if col not in df.columns:
                 if col == 'vehicle_id':
-                    df['vehicle_id'] = [f"vehicle_{i+1}" for i in range(len(df))]
+                    # Use vehicleNo as primary vehicle_id
+                    if 'vehicleNo' in df.columns:
+                        df['vehicle_id'] = df['vehicleNo']
+                    elif 'vehicleId' in df.columns:
+                        df['vehicle_id'] = df['vehicleId']
+                    else:
+                        df['vehicle_id'] = [f"vehicle_{i+1}" for i in range(len(df))]
                 elif col == 'status':
                     df['status'] = 'active'
         
@@ -235,7 +245,7 @@ class VehicleService:
         if 'vehicle_type' not in df.columns:
             df['vehicle_type'] = 'garbage_truck'
         if 'capacity' not in df.columns:
-            df['capacity'] = 1000  # Default capacity in kg
+            df['capacity'] = 500  # Default capacity in kg
         if 'ward_no' not in df.columns:
             df['ward_no'] = '1'  # Default ward
         
@@ -246,11 +256,11 @@ class VehicleService:
         logger.warning("Creating fallback vehicle data")
         
         fallback_data = [
-            {'vehicle_id': 'SWM001', 'status': 'active', 'vehicle_type': 'garbage_truck', 'capacity': 1000},
-            {'vehicle_id': 'SWM002', 'status': 'active', 'vehicle_type': 'garbage_truck', 'capacity': 1000},
-            {'vehicle_id': 'SWM003', 'status': 'active', 'vehicle_type': 'garbage_truck', 'capacity': 1000},
-            {'vehicle_id': 'SWM004', 'status': 'active', 'vehicle_type': 'garbage_truck', 'capacity': 1000},
-            {'vehicle_id': 'SWM005', 'status': 'active', 'vehicle_type': 'garbage_truck', 'capacity': 1000}
+            {'vehicle_id': 'SWM001', 'vehicleId': 'SWM001', 'vehicleNo': 'SWM001', 'driverName': 'Driver1', 'imeiN': '123456789', 'phoneNo': '9876543210', 'wardNo': '1', 'vehicleType': 'garbage_truck', 'department': 'SWM', 'timestamp': '2024-01-01T00:00:00Z', 'status': 'active', 'capacity': 500},
+            {'vehicle_id': 'SWM002', 'vehicleId': 'SWM002', 'vehicleNo': 'SWM002', 'driverName': 'Driver2', 'imeiN': '123456790', 'phoneNo': '9876543211', 'wardNo': '1', 'vehicleType': 'garbage_truck', 'department': 'SWM', 'timestamp': '2024-01-01T00:00:00Z', 'status': 'active', 'capacity': 500},
+            {'vehicle_id': 'SWM003', 'vehicleId': 'SWM003', 'vehicleNo': 'SWM003', 'driverName': 'Driver3', 'imeiN': '123456791', 'phoneNo': '9876543212', 'wardNo': '1', 'vehicleType': 'garbage_truck', 'department': 'SWM', 'timestamp': '2024-01-01T00:00:00Z', 'status': 'active', 'capacity': 500},
+            {'vehicle_id': 'SWM004', 'vehicleId': 'SWM004', 'vehicleNo': 'SWM004', 'driverName': 'Driver4', 'imeiN': '123456792', 'phoneNo': '9876543213', 'wardNo': '1', 'vehicleType': 'garbage_truck', 'department': 'SWM', 'timestamp': '2024-01-01T00:00:00Z', 'status': 'active', 'capacity': 500},
+            {'vehicle_id': 'SWM005', 'vehicleId': 'SWM005', 'vehicleNo': 'SWM005', 'driverName': 'Driver5', 'imeiN': '123456793', 'phoneNo': '9876543214', 'wardNo': '1', 'vehicleType': 'garbage_truck', 'department': 'SWM', 'timestamp': '2024-01-01T00:00:00Z', 'status': 'active', 'capacity': 500}
         ]
         
         return pd.DataFrame(fallback_data)

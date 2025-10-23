@@ -5,6 +5,10 @@ from typing import List, Dict, Tuple, Any
 from sklearn.cluster import KMeans
 import networkx as nx
 from routing.hierarchical_clustering import HierarchicalSpatialClustering
+import warnings
+
+# Suppress specific geographic CRS warnings for intentional lat/lon usage
+warnings.filterwarnings('ignore', message='.*Geometry is in a geographic CRS.*')
 
 class CapacityRouteOptimizer:
     def __init__(self, max_houses_per_trip: int = 500):
@@ -21,8 +25,11 @@ class CapacityRouteOptimizer:
         if len(active_vehicles) == 0:
             raise ValueError("No active vehicles found")
         
-        # Get building centroids
-        building_centroids = [(pt.x, pt.y) for pt in buildings_gdf.geometry.centroid]
+        # Get building centroids with proper CRS handling
+        buildings_projected = buildings_gdf.to_crs('EPSG:3857')  # Web Mercator for accurate distance
+        building_centroids = [(pt.x, pt.y) for pt in buildings_projected.geometry.centroid]
+        # Keep original for final output
+        building_centroids_wgs84 = [(pt.x, pt.y) for pt in buildings_gdf.geometry.centroid]
         total_houses = len(building_centroids)
         
         # Calculate trips needed per vehicle based on capacity

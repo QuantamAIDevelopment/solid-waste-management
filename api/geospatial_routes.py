@@ -3,6 +3,9 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header, F
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
+from typing import List, Dict, Any
+import numpy as np
 import tempfile
 import os
 import shutil
@@ -20,6 +23,10 @@ from services.vehicle_service import VehicleService
 from api.vehicles_api import router as vehicles_router
 from routing.capacity_optimizer import CapacityRouteOptimizer
 from loguru import logger
+import warnings
+
+# Suppress specific geographic CRS warnings for intentional lat/lon usage in maps
+warnings.filterwarnings('ignore', message='.*Geometry is in a geographic CRS.*')
 
 # API Key for authentication - Change this in production!
 API_KEY = "swm-2024-secure-key"
@@ -36,7 +43,21 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)
 app = FastAPI(
     title="Geospatial AI Route Optimizer",
     description="Dynamic garbage collection route optimization using live vehicle data and road network",
-    version="2.0.0"
+    version="2.0.0",
+    openapi_tags=[
+        {
+            "name": "clusters",
+            "description": "Cluster management and road coordinate retrieval"
+        },
+        {
+            "name": "optimization",
+            "description": "Route optimization operations"
+        },
+        {
+            "name": "maps",
+            "description": "Map generation and visualization"
+        }
+    ]
 )
 
 # Initialize vehicle service
@@ -60,13 +81,27 @@ def safe_argmin(distances):
         return None
     return np.argmin(distances)
 
-@app.post("/optimize-routes")
+def convert_numpy_types(obj):
+    """Convert numpy types to JSON serializable types."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    return obj
+
+@app.post("/optimize-routes", tags=["optimization"])
 async def optimize_routes(
     roads_file: UploadFile = File(..., description="Roads GeoJSON file"),
     buildings_file: UploadFile = File(..., description="Buildings GeoJSON file"), 
     ward_geojson: UploadFile = File(..., description="Ward boundary GeoJSON file"),
     ward_no: str = Form(..., description="Ward number to filter vehicles"),
-    vehicles_csv: UploadFile = File(None, description="Optional: Custom vehicles CSV file")
+    vehicles_csv: UploadFile = File(default=None, description="Optional: Custom vehicles CSV file")
 ):
     """Upload files and run complete route optimization pipeline."""
     
@@ -230,466 +265,293 @@ async def optimize_routes(
             print(f"Error details: {error_details}")
             raise HTTPException(status_code=500, detail=f"Optimization failed: {str(e)}")
 
-@app.get("/cluster/{cluster_id}")
-async def get_cluster(cluster_id: int, api_key: str = Depends(verify_api_key)):
-    """Return detailed data for a specific cluster."""
+
+
+
+
+
+
+class Coordinate(BaseModel):
+    longitude: float
+    latitude: float
+
+class RoadSegment(BaseModel):
+    start_coordinate: Coordinate
+    end_coordinate: Coordinate
+    distance_meters: float
+
+class VehicleInfo(BaseModel):
+    vehicle_id: str
+    vehicle_type: str
+    status: str
+    capacity: int
+
+class ClusterBounds(BaseModel):
+    min_longitude: float
+    max_longitude: float
+    min_latitude: float
+    max_latitude: float
+
+class ClusterRoadsResponse(BaseModel):
+    cluster_id: int
+    vehicle_info: VehicleInfo
+    buildings_count: int
+    roads: List[RoadSegment]
+    total_road_segments: int
+    cluster_bounds: ClusterBounds
+
+class AllClustersRoadsResponse(BaseModel):
+    total_clusters: int
+    clusters: List[ClusterRoadsResponse]
+
+@app.get("/cluster/{cluster_id}", tags=["clusters"], response_model=ClusterRoadsResponse)
+async def get_cluster_roads(cluster_id: int):
+    """Get cluster roads with coordinates for a specific cluster.
+    
+    Returns all road segments within the cluster along with their start/end coordinates.
+    Each road segment includes the geographic coordinates and distance in meters.
+    """
     try:
-        # Check if files exist
-        ward_path = "output/ward.geojson"
-        buildings_path = "output/buildings.geojson"
-        roads_path = "output/roads.geojson"
+        # Load processed data from output directory
+        roads_path = os.path.join("output", "roads.geojson")
+        buildings_path = os.path.join("output", "buildings.geojson")
+        vehicles_path = os.path.join("output", "vehicles.csv")
         
-        if not os.path.exists(ward_path) or not os.path.exists(buildings_path):
-            raise HTTPException(status_code=404, detail="Data not found. Please upload files first using /optimize-routes")
-        
-        # Validate cluster_id
-        if cluster_id < 1 or cluster_id > 5:
-            raise HTTPException(status_code=400, detail="Cluster ID must be between 1 and 5")
+        if not all(os.path.exists(p) for p in [roads_path, buildings_path, vehicles_path]):
+            raise HTTPException(status_code=404, detail="Cluster data not found. Run /optimize-routes first")
         
         # Load data
+        roads_gdf = gpd.read_file(roads_path)
         buildings_gdf = gpd.read_file(buildings_path)
-        roads_gdf = gpd.read_file(roads_path) if os.path.exists(roads_path) else None
+        vehicles_df = pd.read_csv(vehicles_path)
         
+        # Convert to WGS84 if needed
+        if roads_gdf.crs != 'EPSG:4326':
+            roads_gdf = roads_gdf.to_crs('EPSG:4326')
         if buildings_gdf.crs != 'EPSG:4326':
             buildings_gdf = buildings_gdf.to_crs('EPSG:4326')
-        if roads_gdf is not None and roads_gdf.crs != 'EPSG:4326':
-            roads_gdf = roads_gdf.to_crs('EPSG:4326')
         
-        # Cluster buildings
-        building_centroids = [(pt.x, pt.y) for pt in buildings_gdf.geometry.centroid]
-        n_clusters = min(5, len(building_centroids))
-        
-        if n_clusters == 1:
-            building_clusters = [0] * len(building_centroids)
-        else:
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            building_clusters = kmeans.fit_predict(building_centroids)
-        
-        # Get center coordinates for depot calculation
-        bounds = buildings_gdf.total_bounds
-        center_lat = (bounds[1] + bounds[3]) / 2
-        center_lon = (bounds[0] + bounds[2]) / 2
-        
-        # Define depot locations
-        depot_locations = [
-            (center_lon - 0.002, center_lat - 0.002),
-            (center_lon + 0.002, center_lat - 0.002),
-            (center_lon, center_lat),
-            (center_lon - 0.002, center_lat + 0.002),
-            (center_lon + 0.002, center_lat + 0.002)
+        # Get active vehicles and create clusters
+        active_vehicles = vehicles_df[
+            vehicles_df['status'].str.upper().isin(['ACTIVE', 'AVAILABLE', 'ONLINE'])
         ]
         
-        vehicle_names = ['Vehicle A', 'Vehicle B', 'Vehicle C', 'Vehicle D', 'Vehicle E']
+        if cluster_id >= len(active_vehicles):
+            raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
         
-        # Create road network graph
-        G = nx.Graph()
-        all_road_points = []
+        # Create building clusters using KMeans with proper CRS
+        buildings_projected = buildings_gdf.to_crs('EPSG:3857')  # Web Mercator for accurate clustering
+        building_centroids = [(pt.x, pt.y) for pt in buildings_projected.geometry.centroid]
+        kmeans = KMeans(n_clusters=min(len(active_vehicles), len(building_centroids)), random_state=42, n_init=10)
+        building_clusters = kmeans.fit_predict(building_centroids).tolist()  # Convert to list
         
-        if roads_gdf is not None:
-            for idx, road in roads_gdf.iterrows():
-                geom = road.geometry
-                if geom.geom_type == 'MultiLineString':
-                    for line in geom.geoms:
-                        coords = list(line.coords)
-                        all_road_points.extend(coords)
-                        for i in range(len(coords)-1):
-                            p1, p2 = coords[i], coords[i+1]
-                            dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**0.5
-                            G.add_edge(p1, p2, weight=dist)
-                else:
-                    coords = list(geom.coords)
-                    all_road_points.extend(coords)
-                    for i in range(len(coords)-1):
-                        p1, p2 = coords[i], coords[i+1]
-                        dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**0.5
-                        G.add_edge(p1, p2, weight=dist)
+        # Get buildings for this cluster
+        cluster_buildings = buildings_gdf[[i == cluster_id for i in building_clusters]]
         
-        all_road_points = list(set(all_road_points))
-        
-        # Process the specific cluster
-        target_cluster_id = cluster_id - 1  # Convert to 0-based index
-        cluster_buildings = [i for i, c in enumerate(building_clusters) if c == target_cluster_id]
-        
-        if not cluster_buildings:
+        if len(cluster_buildings) == 0:
             raise HTTPException(status_code=404, detail=f"No buildings found in cluster {cluster_id}")
         
-        cluster_coords = [building_centroids[i] for i in cluster_buildings]
-        depot = depot_locations[target_cluster_id] if target_cluster_id < len(depot_locations) else depot_locations[0]
-        
-        # Get house locations for this cluster
-        house_locations_wgs84 = []
-        for i in cluster_buildings:
-            pt = buildings_gdf.iloc[i].geometry.centroid
-            house_locations_wgs84.append((pt.x, pt.y))
-        
-        # Find nearest road points to houses and depot
-        house_road_points = []
-        for house_pt in house_locations_wgs84:
-            if all_road_points:
-                distances = [((house_pt[0]-rp[0])**2 + (house_pt[1]-rp[1])**2)**0.5 for rp in all_road_points]
-                nearest_idx = np.argmin(distances)
-                house_road_points.append(all_road_points[nearest_idx])
-            else:
-                house_road_points.append(house_pt)
-        
-        # Find depot road point
-        if all_road_points:
-            depot_distances = [((depot[0]-rp[0])**2 + (depot[1]-rp[1])**2)**0.5 for rp in all_road_points]
-            depot_road_point = all_road_points[np.argmin(depot_distances)]
-        else:
-            depot_road_point = depot
-        
-        # Create optimized route
-        route_points = [depot_road_point]  # Start at depot
-        road_segments = []
-        
-        if house_road_points:
-            # Remove duplicates while preserving order
-            unique_house_points = []
-            for pt in house_road_points:
-                if pt not in unique_house_points:
-                    unique_house_points.append(pt)
-            
-            if unique_house_points:
-                current_point = depot_road_point
-                remaining_points = unique_house_points.copy()
-                
-                # Visit all houses using shortest path
-                while remaining_points:
-                    # Find nearest unvisited house
-                    distances = [((current_point[0]-pt[0])**2 + (current_point[1]-pt[1])**2)**0.5 for pt in remaining_points]
-                    nearest_idx = np.argmin(distances)
-                    next_point = remaining_points.pop(nearest_idx)
-                    
-                    # Try to find path on road network
-                    try:
-                        path_segment = nx.shortest_path(G, current_point, next_point, weight='weight')
-                        route_points.extend(path_segment[1:])  # Skip first point
-                        
-                        # Add road segment details
-                        for i in range(len(path_segment)-1):
-                            road_segments.append({
-                                "start": {"longitude": path_segment[i][0], "latitude": path_segment[i][1]},
-                                "end": {"longitude": path_segment[i+1][0], "latitude": path_segment[i+1][1]}
-                            })
-                    except:
-                        # Direct connection if no path found
-                        route_points.append(next_point)
-                        road_segments.append({
-                            "start": {"longitude": current_point[0], "latitude": current_point[1]},
-                            "end": {"longitude": next_point[0], "latitude": next_point[1]}
-                        })
-                    
-                    current_point = next_point
-                
-                # Return to depot
-                try:
-                    path_home = nx.shortest_path(G, current_point, depot_road_point, weight='weight')
-                    route_points.extend(path_home[1:])
-                    
-                    # Add return segments
-                    for i in range(len(path_home)-1):
-                        road_segments.append({
-                            "start": {"longitude": path_home[i][0], "latitude": path_home[i][1]},
-                            "end": {"longitude": path_home[i+1][0], "latitude": path_home[i+1][1]}
-                        })
-                except:
-                    route_points.append(depot_road_point)
-                    road_segments.append({
-                        "start": {"longitude": current_point[0], "latitude": current_point[1]},
-                        "end": {"longitude": depot_road_point[0], "latitude": depot_road_point[1]}
-                    })
-        
-        # Create cluster outline (convex hull)
-        from shapely.geometry import MultiPoint
-        cluster_points = MultiPoint(cluster_coords + [depot])
-        cluster_outline = list(cluster_points.convex_hull.exterior.coords)
-        
-        cluster_data = {
-            "cluster_id": cluster_id,
-            "vehicle": vehicle_names[target_cluster_id] if target_cluster_id < len(vehicle_names) else f"Vehicle {cluster_id}",
-            "vehicle_start_point": {"longitude": depot_road_point[0], "latitude": depot_road_point[1]},
-            "vehicle_end_point": {"longitude": depot_road_point[0], "latitude": depot_road_point[1]},
-            "depot": {"longitude": depot[0], "latitude": depot[1]},
-            "cluster_outline": [
-                {"longitude": coord[0], "latitude": coord[1]} 
-                for coord in cluster_outline
-            ],
-            "road_segments": road_segments,
-            "complete_route_coordinates": [
-                {"longitude": pt[0], "latitude": pt[1]} 
-                for pt in route_points
-            ],
-            "house_count": len(cluster_coords),
-            "total_segments": len(road_segments)
-        }
-        
-        return JSONResponse(cluster_data)
-        
-    except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"Cluster error details: {error_details}")
-        raise HTTPException(status_code=500, detail=f"Error getting cluster {cluster_id}: {str(e)}")
-
-@app.get("/cluster-dashboard")
-async def get_cluster_dashboard(api_key: str = Depends(verify_api_key)):
-    """Return cluster dashboard data for visualization."""
-    try:
-        buildings_path = "output/buildings.geojson"
-        if not os.path.exists(buildings_path):
-            raise HTTPException(status_code=404, detail="Data not found. Upload files first.")
-        
-        buildings_gdf = gpd.read_file(buildings_path)
-        if buildings_gdf.crs != 'EPSG:4326':
-            buildings_gdf = buildings_gdf.to_crs('EPSG:4326')
-        
-        building_centroids = [(pt.x, pt.y) for pt in buildings_gdf.geometry.centroid]
-        n_clusters = min(5, len(building_centroids))
-        
-        if n_clusters == 1:
-            building_clusters = [0] * len(building_centroids)
-        else:
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            building_clusters = kmeans.fit_predict(building_centroids)
-        
-        colors = ['#FF0000', '#0000FF', '#00FF00', '#FF8000', '#8000FF']
-        vehicle_names = ['Vehicle A', 'Vehicle B', 'Vehicle C', 'Vehicle D', 'Vehicle E']
-        
-        dashboard_data = []
-        for cluster_id in range(n_clusters):
-            cluster_buildings = [i for i, c in enumerate(building_clusters) if c == cluster_id]
-            if cluster_buildings:
-                dashboard_data.append({
-                    "cluster_id": cluster_id + 1,
-                    "color": colors[cluster_id],
-                    "vehicle": vehicle_names[cluster_id],
-                    "building_count": len(cluster_buildings),
-                    "estimated_distance": f"{len(cluster_buildings) * 0.5:.1f} km",
-                    "estimated_time": f"{len(cluster_buildings) * 3:.0f} min"
-                })
-        
-        return JSONResponse({
-            "total_clusters": n_clusters,
-            "total_buildings": len(buildings_gdf),
-            "clusters": dashboard_data
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Dashboard error: {str(e)}")
-
-@app.get("/clusters")
-async def get_all_clusters(api_key: str = Depends(verify_api_key)):
-    """Return all clusters data."""
-    clusters = {}
-    for i in range(1, 6):
-        try:
-            cluster_response = await get_cluster(i)
-            cluster_data = json.loads(cluster_response.body)
-            clusters[f"cluster_{i}"] = cluster_data
-        except:
-            continue
-    try:
-        # Check if files exist
-        ward_path = "output/ward.geojson"
-        buildings_path = "output/buildings.geojson"
-        roads_path = "output/roads.geojson"
-        
-        if not os.path.exists(ward_path) or not os.path.exists(buildings_path):
-            raise HTTPException(status_code=404, detail="Data not found. Please upload files first using /optimize-routes")
-        
-        # Load data
-        buildings_gdf = gpd.read_file(buildings_path)
-        roads_gdf = gpd.read_file(roads_path) if os.path.exists(roads_path) else None
-        
-        if buildings_gdf.crs != 'EPSG:4326':
-            buildings_gdf = buildings_gdf.to_crs('EPSG:4326')
-        if roads_gdf is not None and roads_gdf.crs != 'EPSG:4326':
-            roads_gdf = roads_gdf.to_crs('EPSG:4326')
-        
-        # Validate we have buildings
-        if len(buildings_gdf) == 0:
-            raise HTTPException(status_code=400, detail="No buildings found in the dataset")
-        
-        # Cluster buildings
-        building_centroids = [(pt.x, pt.y) for pt in buildings_gdf.geometry.centroid]
-        
-        if len(building_centroids) == 0:
-            raise HTTPException(status_code=400, detail="No valid building centroids found")
-        
-        n_clusters = min(5, len(building_centroids))
-        
-        if n_clusters == 1:
-            building_clusters = [0] * len(building_centroids)
-        else:
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            building_clusters = kmeans.fit_predict(building_centroids)
-        
-        # Get center coordinates for depot calculation
-        bounds = buildings_gdf.total_bounds
-        center_lat = (bounds[1] + bounds[3]) / 2
-        center_lon = (bounds[0] + bounds[2]) / 2
-        
-        # Define depot locations for each vehicle
-        depot_locations = [
-            (center_lon - 0.002, center_lat - 0.002),
-            (center_lon + 0.002, center_lat - 0.002),
-            (center_lon, center_lat),
-            (center_lon - 0.002, center_lat + 0.002),
-            (center_lon + 0.002, center_lat + 0.002)
-        ]
-        
-        vehicle_names = ['Vehicle A', 'Vehicle B', 'Vehicle C', 'Vehicle D', 'Vehicle E']
-        
-        # Create road network graph
+        # Build road network graph
         G = nx.Graph()
-        all_road_points = []
+        road_coordinates = []
         
-        if roads_gdf is not None:
-            for idx, road in roads_gdf.iterrows():
-                geom = road.geometry
-                if geom.geom_type == 'MultiLineString':
-                    for line in geom.geoms:
-                        coords = list(line.coords)
-                        all_road_points.extend(coords)
-                        for i in range(len(coords)-1):
-                            p1, p2 = coords[i], coords[i+1]
-                            dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**0.5
-                            G.add_edge(p1, p2, weight=dist)
-                else:
-                    coords = list(geom.coords)
-                    all_road_points.extend(coords)
+        for idx, road in roads_gdf.iterrows():
+            geom = road.geometry
+            if geom.geom_type == 'MultiLineString':
+                for line in geom.geoms:
+                    coords = list(line.coords)
+                    road_coordinates.extend(coords)
                     for i in range(len(coords)-1):
                         p1, p2 = coords[i], coords[i+1]
                         dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**0.5
                         G.add_edge(p1, p2, weight=dist)
+            else:
+                coords = list(geom.coords)
+                road_coordinates.extend(coords)
+                for i in range(len(coords)-1):
+                    p1, p2 = coords[i], coords[i+1]
+                    dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**0.5
+                    G.add_edge(p1, p2, weight=dist)
         
-        all_road_points = list(set(all_road_points))
+        # Find roads used by this cluster
+        cluster_road_points = list(set(road_coordinates))
+        house_locations = [(pt.x, pt.y) for pt in cluster_buildings.geometry.centroid]
         
-        # Create detailed cluster response
-        clusters = {}
-        for cluster_id in range(n_clusters):
-            cluster_buildings = [i for i, c in enumerate(building_clusters) if c == cluster_id]
-            
-            if cluster_buildings:
-                cluster_coords = [building_centroids[i] for i in cluster_buildings]
-                depot = depot_locations[cluster_id] if cluster_id < len(depot_locations) else depot_locations[0]
+        # Find nearest road points to houses
+        cluster_roads = []
+        for house_pt in house_locations:
+            if cluster_road_points:
+                distances = [((house_pt[0]-rp[0])**2 + (house_pt[1]-rp[1])**2)**0.5 for rp in cluster_road_points]
+                nearest_idx = np.argmin(distances)
+                nearest_road_point = cluster_road_points[nearest_idx]
                 
-                # Get house locations for this cluster
-                house_locations_wgs84 = []
-                for i in cluster_buildings:
+                # Find all road segments connected to this point
+                for edge in G.edges(nearest_road_point, data=True):
+                    road_segment = {
+                        "start_coordinate": {"longitude": float(edge[0][0]), "latitude": float(edge[0][1])},
+                        "end_coordinate": {"longitude": float(edge[1][0]), "latitude": float(edge[1][1])},
+                        "distance_meters": float(edge[2]['weight'] * 111000)  # Approximate conversion
+                    }
+                    if road_segment not in cluster_roads:
+                        cluster_roads.append(road_segment)
+        
+        # Get vehicle info
+        vehicle_info = active_vehicles.iloc[cluster_id] if cluster_id < len(active_vehicles) else {}
+        
+        response_data = {
+            "cluster_id": cluster_id,
+            "vehicle_info": {
+                "vehicle_id": str(vehicle_info.get('vehicle_id', f'vehicle_{cluster_id}')),
+                "vehicle_type": str(vehicle_info.get('vehicle_type', 'standard')),
+                "status": str(vehicle_info.get('status', 'active')),
+                "capacity": vehicle_info.get('capacity', 1000)
+            },
+            "buildings_count": len(cluster_buildings),
+            "roads": cluster_roads,
+            "total_road_segments": len(cluster_roads),
+            "cluster_bounds": {
+                "min_longitude": cluster_buildings.bounds.minx.min(),
+                "max_longitude": cluster_buildings.bounds.maxx.max(),
+                "min_latitude": cluster_buildings.bounds.miny.min(),
+                "max_latitude": cluster_buildings.bounds.maxy.max()
+            }
+        }
+        
+        # Convert all numpy types to JSON serializable types
+        response_data = convert_numpy_types(response_data)
+        
+        return JSONResponse(response_data)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting cluster roads: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get cluster roads: {str(e)}")
+
+@app.get("/clusters", tags=["clusters"], response_model=AllClustersRoadsResponse)
+async def get_all_cluster_roads():
+    """Get cluster roads with coordinates for all clusters.
+    
+    Returns all road segments within each cluster along with their start/end coordinates.
+    Each road segment includes the geographic coordinates and distance in meters.
+    """
+    try:
+        roads_path = os.path.join("output", "roads.geojson")
+        buildings_path = os.path.join("output", "buildings.geojson")
+        vehicles_path = os.path.join("output", "vehicles.csv")
+        
+        if not all(os.path.exists(p) for p in [roads_path, buildings_path, vehicles_path]):
+            raise HTTPException(status_code=404, detail="Cluster data not found. Run /optimize-routes first")
+        
+        roads_gdf = gpd.read_file(roads_path)
+        buildings_gdf = gpd.read_file(buildings_path)
+        vehicles_df = pd.read_csv(vehicles_path)
+        
+        if roads_gdf.crs != 'EPSG:4326':
+            roads_gdf = roads_gdf.to_crs('EPSG:4326')
+        if buildings_gdf.crs != 'EPSG:4326':
+            buildings_gdf = buildings_gdf.to_crs('EPSG:4326')
+        
+        active_vehicles = vehicles_df[
+            vehicles_df['status'].str.upper().isin(['ACTIVE', 'AVAILABLE', 'ONLINE'])
+        ]
+        
+        buildings_projected = buildings_gdf.to_crs('EPSG:3857')
+        building_centroids = [(pt.x, pt.y) for pt in buildings_projected.geometry.centroid]
+        kmeans = KMeans(n_clusters=min(len(active_vehicles), len(building_centroids)), random_state=42, n_init=10)
+        building_clusters = kmeans.fit_predict(building_centroids).tolist()
+        
+        G = nx.Graph()
+        road_coordinates = []
+        
+        for idx, road in roads_gdf.iterrows():
+            geom = road.geometry
+            if geom.geom_type == 'MultiLineString':
+                for line in geom.geoms:
+                    coords = list(line.coords)
+                    road_coordinates.extend(coords)
+                    for i in range(len(coords)-1):
+                        p1, p2 = coords[i], coords[i+1]
+                        dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**0.5
+                        G.add_edge(p1, p2, weight=dist)
+            else:
+                coords = list(geom.coords)
+                road_coordinates.extend(coords)
+                for i in range(len(coords)-1):
+                    p1, p2 = coords[i], coords[i+1]
+                    dist = ((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)**0.5
+                    G.add_edge(p1, p2, weight=dist)
+        
+        cluster_road_points = list(set(road_coordinates))
+        all_clusters = []
+        
+        for cluster_id in range(len(active_vehicles)):
+            cluster_buildings = buildings_gdf[[i == cluster_id for i in building_clusters]]
+            
+            if len(cluster_buildings) == 0:
+                continue
+            
+            house_locations_wgs84 = []
+            for i in range(len(buildings_gdf)):
+                if building_clusters[i] == cluster_id:
                     pt = buildings_gdf.iloc[i].geometry.centroid
                     house_locations_wgs84.append((pt.x, pt.y))
-                
-                # Find nearest road points to houses and depot
-                house_road_points = []
-                for house_pt in house_locations_wgs84:
-                    if all_road_points:
-                        distances = [((house_pt[0]-rp[0])**2 + (house_pt[1]-rp[1])**2)**0.5 for rp in all_road_points]
-                        nearest_idx = np.argmin(distances)
-                        house_road_points.append(all_road_points[nearest_idx])
-                    else:
-                        house_road_points.append(house_pt)
-                
-                # Find depot road point
-                if all_road_points:
-                    depot_distances = [((depot[0]-rp[0])**2 + (depot[1]-rp[1])**2)**0.5 for rp in all_road_points]
-                    depot_road_point = all_road_points[np.argmin(depot_distances)]
-                else:
-                    depot_road_point = depot
-                
-                # Create optimized route
-                route_points = [depot_road_point]  # Start at depot
-                road_segments = []
-                
-                if house_road_points:
-                    # Remove duplicates while preserving order
-                    unique_house_points = []
-                    for pt in house_road_points:
-                        if pt not in unique_house_points:
-                            unique_house_points.append(pt)
+            
+            cluster_roads = []
+            for house_pt in house_locations_wgs84:
+                if cluster_road_points:
+                    distances = [((house_pt[0]-rp[0])**2 + (house_pt[1]-rp[1])**2)**0.5 for rp in cluster_road_points]
+                    nearest_idx = np.argmin(distances)
+                    nearest_road_point = cluster_road_points[nearest_idx]
                     
-                    if unique_house_points:
-                        current_point = depot_road_point
-                        remaining_points = unique_house_points.copy()
-                        
-                        # Visit all houses using shortest path
-                        while remaining_points:
-                            # Find nearest unvisited house
-                            distances = [((current_point[0]-pt[0])**2 + (current_point[1]-pt[1])**2)**0.5 for pt in remaining_points]
-                            nearest_idx = np.argmin(distances)
-                            next_point = remaining_points.pop(nearest_idx)
-                            
-                            # Try to find path on road network
-                            try:
-                                path_segment = nx.shortest_path(G, current_point, next_point, weight='weight')
-                                route_points.extend(path_segment[1:])  # Skip first point
-                                
-                                # Add road segment details
-                                for i in range(len(path_segment)-1):
-                                    road_segments.append({
-                                        "start": {"longitude": path_segment[i][0], "latitude": path_segment[i][1]},
-                                        "end": {"longitude": path_segment[i+1][0], "latitude": path_segment[i+1][1]}
-                                    })
-                            except:
-                                # Direct connection if no path found
-                                route_points.append(next_point)
-                                road_segments.append({
-                                    "start": {"longitude": current_point[0], "latitude": current_point[1]},
-                                    "end": {"longitude": next_point[0], "latitude": next_point[1]}
-                                })
-                            
-                            current_point = next_point
-                        
-                        # Return to depot
-                        try:
-                            path_home = nx.shortest_path(G, current_point, depot_road_point, weight='weight')
-                            route_points.extend(path_home[1:])
-                            
-                            # Add return segments
-                            for i in range(len(path_home)-1):
-                                road_segments.append({
-                                    "start": {"longitude": path_home[i][0], "latitude": path_home[i][1]},
-                                    "end": {"longitude": path_home[i+1][0], "latitude": path_home[i+1][1]}
-                                })
-                        except:
-                            route_points.append(depot_road_point)
-                            road_segments.append({
-                                "start": {"longitude": current_point[0], "latitude": current_point[1]},
-                                "end": {"longitude": depot_road_point[0], "latitude": depot_road_point[1]}
-                            })
-                
-                # Create cluster outline (convex hull)
-                from shapely.geometry import MultiPoint
-                cluster_points = MultiPoint(cluster_coords + [depot])
-                cluster_outline = list(cluster_points.convex_hull.exterior.coords)
-                
-                clusters[f"cluster_{cluster_id + 1}"] = {
-                    "vehicle": vehicle_names[cluster_id] if cluster_id < len(vehicle_names) else f"Vehicle {cluster_id + 1}",
-                    "vehicle_start_point": {"longitude": depot_road_point[0], "latitude": depot_road_point[1]},
-                    "vehicle_end_point": {"longitude": depot_road_point[0], "latitude": depot_road_point[1]},
-                    "depot": {"longitude": depot[0], "latitude": depot[1]},
-                    "cluster_outline": [
-                        {"longitude": coord[0], "latitude": coord[1]} 
-                        for coord in cluster_outline
-                    ],
-                    "road_segments": road_segments,
-                    "complete_route_coordinates": [
-                        {"longitude": pt[0], "latitude": pt[1]} 
-                        for pt in route_points
-                    ],
-                    "house_count": len(cluster_coords),
-                    "total_segments": len(road_segments)
+                    for edge in G.edges(nearest_road_point, data=True):
+                        road_segment = {
+                            "start_coordinate": {"longitude": float(edge[0][0]), "latitude": float(edge[0][1])},
+                            "end_coordinate": {"longitude": float(edge[1][0]), "latitude": float(edge[1][1])},
+                            "distance_meters": float(edge[2]['weight'] * 111000)
+                        }
+                        if road_segment not in cluster_roads:
+                            cluster_roads.append(road_segment)
+            
+            vehicle_info = active_vehicles.iloc[cluster_id] if cluster_id < len(active_vehicles) else {}
+            
+            cluster_data = {
+                "cluster_id": cluster_id,
+                "vehicle_info": {
+                    "vehicle_id": str(vehicle_info.get('vehicle_id', f'vehicle_{cluster_id}')),
+                    "vehicle_type": str(vehicle_info.get('vehicle_type', 'standard')),
+                    "status": str(vehicle_info.get('status', 'active')),
+                    "capacity": vehicle_info.get('capacity', 1000)
+                },
+                "buildings_count": len(cluster_buildings),
+                "roads": cluster_roads,
+                "total_road_segments": len(cluster_roads),
+                "cluster_bounds": {
+                    "min_longitude": cluster_buildings.bounds.minx.min(),
+                    "max_longitude": cluster_buildings.bounds.maxx.max(),
+                    "min_latitude": cluster_buildings.bounds.miny.min(),
+                    "max_latitude": cluster_buildings.bounds.maxy.max()
                 }
+            }
+            
+            all_clusters.append(cluster_data)
         
-        return JSONResponse(clusters)
+        response_data = {
+            "total_clusters": len(all_clusters),
+            "clusters": all_clusters
+        }
         
+        response_data = convert_numpy_types(response_data)
+        
+        return JSONResponse(response_data)
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        print(f"Cluster error details: {error_details}")
-        raise HTTPException(status_code=500, detail=f"Error getting clusters: {str(e)}")
+        logger.error(f"Error getting all cluster roads: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get all cluster roads: {str(e)}")
 
-@app.get("/generate-map/{map_type}")
+@app.get("/generate-map/{map_type}", tags=["maps"])
 async def generate_map(map_type: str):
     """Generate and return map HTML."""
     # Allow any map type
@@ -838,7 +700,7 @@ def generate_map_from_files(ward_file, roads_file, buildings_file, vehicles_file
         if cluster_buildings:
             cluster_road_points = list(set(cluster_road_points))
             
-            # Get house locations for this cluster
+            # Get house locations for this cluster (already in WGS84)
             house_locations_wgs84 = []
             for i in cluster_buildings:
                 pt = buildings_gdf.iloc[i].geometry.centroid
@@ -1056,10 +918,9 @@ async def root():
             <h3>Available Endpoints:</h3>
             <ul>
                 <li><strong>POST /optimize-routes</strong> - Upload files with ward_no and generate optimized routes using live vehicles</li>
+                <li><strong>GET /cluster/{cluster_id}</strong> - Get cluster roads with coordinates for specific cluster</li>
+                <li><strong>GET /clusters</strong> - Get cluster roads with coordinates for all clusters</li>
                 <li><strong>GET /generate-map/route_map</strong> - View interactive map with layer controls</li>
-                <li><strong>GET /cluster-dashboard</strong> - Get cluster data in JSON format</li>
-                <li><strong>GET /cluster/{cluster_id}</strong> - Get specific cluster details</li>
-                <li><strong>GET /clusters</strong> - Get all clusters data</li>
                 <li><strong>GET /api/vehicles/live</strong> - Get live vehicle data from SWM API</li>
                 <li><strong>GET /api/vehicles/{vehicle_id}</strong> - Get specific vehicle details</li>
                 <li><strong>PUT /api/vehicles/{vehicle_id}/status</strong> - Update vehicle status</li>
