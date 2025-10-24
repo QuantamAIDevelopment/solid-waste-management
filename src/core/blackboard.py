@@ -3,7 +3,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import threading
-from models.blackboard_entry import BlackboardEntry, UploadData, RouteResult
+from src.models.blackboard_entry import BlackboardEntry, UploadData, RouteResult
 
 logger = logging.getLogger(__name__)
 

@@ -6,13 +6,13 @@ from pathlib import Path
 from loguru import logger
 
 # Import our modular components
-from data_processing.load_road_network import RoadNetworkLoader
-from data_processing.snap_buildings import BuildingSnapper
-from clustering.assign_buildings import BuildingClusterer
-from routing.compute_routes import RouteComputer
-from routing.get_osrm_directions import OSRMDirectionsProvider
-from visualization.export_to_geojson import RouteExporter
-from visualization.folium_map import FoliumMapGenerator
+from src.data_processing.load_road_network import RoadNetworkLoader
+from src.data_processing.snap_buildings import BuildingSnapper
+from src.clustering.assign_buildings import BuildingClusterer
+from src.routing.compute_routes import RouteComputer
+from src.routing.get_osrm_directions import OSRMDirectionsProvider
+from src.visualization.export_to_geojson import RouteExporter
+from src.visualization.folium_map import FoliumMapGenerator
 
 class GeospatialRouteOptimizer:
     """Complete geospatial AI routing system for garbage collection."""
@@ -79,25 +79,25 @@ class GeospatialRouteOptimizer:
                 coordinates = [(node[0], node[1]) for node in route_data['nodes']]
                 directions[cluster_id] = self.directions_provider.get_route_directions(coordinates)
         
-        # 6️⃣ Export results
-        logger.info("6️⃣ Exporting results...")
+        # 6️⃣ Export results and generate maps alternately
+        logger.info("6️⃣ Exporting results and generating maps...")
         
-        # Prepare and export GeoJSON
+        # Export GeoJSON
         routes_gdf = self.exporter.prepare_routes_geojson(routes, vehicles_df, directions)
         routes_path = os.path.join(output_dir, "routes.geojson")
         self.exporter.export_routes_geojson(routes_path)
         
-        # Prepare and export summary CSV
-        summary_df = self.exporter.prepare_summary_csv(routes, vehicles_df, directions)
-        summary_path = os.path.join(output_dir, "summary.csv")
-        self.exporter.export_summary_csv(summary_path)
-        
-        # Create interactive route map with layered clusters
+        # Generate route map
         route_map = self.map_generator.create_route_map(routes_gdf, clustered_buildings)
         map_path = os.path.join(output_dir, "route_map.html")
         self.map_generator.save_map(route_map, map_path)
         
-        # Create cluster analysis map with toggleable layers
+        # Export summary CSV
+        summary_df = self.exporter.prepare_summary_csv(routes, vehicles_df, directions)
+        summary_path = os.path.join(output_dir, "summary.csv")
+        self.exporter.export_summary_csv(summary_path)
+        
+        # Generate cluster analysis map
         cluster_map = self.map_generator.create_cluster_analysis_map(clustered_buildings)
         cluster_map_path = os.path.join(output_dir, "cluster_analysis.html")
         self.map_generator.save_map(cluster_map, cluster_map_path)
@@ -143,7 +143,7 @@ def main():
     if args.api:
         # Start FastAPI server
         import uvicorn
-        from api.geospatial_routes import app
+        from src.api.geospatial_routes import app
         logger.info(f"🚀 Starting FastAPI server on port {args.port}...")
         try:
             uvicorn.run(app, host="127.0.0.1", port=args.port)
@@ -173,6 +173,14 @@ def main():
             print(f"Results saved to: {args.output}")
             print(f"Interactive map: {results['route_map']}")
             print(f"Summary report: {results['summary_csv']}")
+            
+            # Open the map automatically
+            import webbrowser
+            import os
+            map_path = os.path.abspath(results['route_map'])
+            print(f"\n🌐 Opening map in browser: {map_path}")
+            webbrowser.open(f"file://{map_path}")
+            
             print(f"Vehicle data source: {'Live API' if not args.vehicles else 'CSV file'}")
             
         except Exception as e:

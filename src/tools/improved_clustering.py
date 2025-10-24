@@ -7,7 +7,7 @@ from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
 from scipy.spatial.distance import cdist
 from typing import List, Dict, Tuple
-from configurations.config import Config
+from src.configurations.config import Config
 
 logger = logging.getLogger(__name__)
 

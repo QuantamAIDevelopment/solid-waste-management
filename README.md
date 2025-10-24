@@ -15,14 +15,22 @@ A production-ready Python system for optimizing garbage collection routes using 
 ## Architecture
 
 ```
-├── agents/                 # Route assignment logic
-├── api/                   # FastAPI endpoints
-├── configurations/        # System configuration
-├── core/                  # Blackboard coordination system
-├── models/                # Data models
-├── storage/               # PostGIS integration
-├── tools/                 # Road snapping and VRP solving
-└── tests/                 # Unit and integration tests
+├── src/
+│   ├── agents/            # Route assignment logic
+│   ├── api/               # FastAPI endpoints
+│   ├── clustering/        # Building clustering and trip assignment
+│   ├── configurations/    # System configuration
+│   ├── core/              # Blackboard coordination system
+│   ├── data_processing/   # Road network and building processing
+│   ├── models/            # Data models
+│   ├── routing/           # Route computation and optimization
+│   ├── services/          # Vehicle service and API integration
+│   ├── storage/           # PostGIS integration
+│   ├── tools/             # Road snapping and VRP solving
+│   └── visualization/     # Map generation and export
+├── tests/                 # Unit and integration tests
+├── output/                # Generated maps and results
+└── main.py               # Main entry point
 ```
 
 ## Quick Start
@@ -51,6 +59,11 @@ export DATABASE_URL="postgresql://user:password@localhost:5432/waste_db"
 3. Run the system:
 ```bash
 python main.py --api --port 8081
+```
+
+Or run CLI mode:
+```bash
+python main.py --roads roads.geojson --buildings buildings.geojson --output results/
 ```
 
 The API will be available at `http://localhost:8081` with Swagger UI at `http://localhost:8081/docs`.
@@ -106,8 +119,7 @@ curl "http://localhost:8081/api/vehicles/live"
 ```
 
 ### 4. View Interactive Maps
-- Route Map: `http://localhost:8081/generate-map/route_map`
-- Cluster Analysis: `http://localhost:8081/generate-map/cluster_analysis`
+- Route Map: `http://localhost:8081/generate-map`
 
 ### 5. API Documentation
 Swagger UI: `http://localhost:8081/docs`
@@ -193,7 +205,7 @@ pytest tests/test_snapper_vrp.py::TestIntegration::test_end_to_end_small_dataset
 
 ## Configuration
 
-Edit `configurations/config.py`:
+Edit `src/configurations/config.py`:
 
 ```python
 class Config:

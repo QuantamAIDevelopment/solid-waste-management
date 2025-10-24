@@ -3,7 +3,7 @@ import pandas as pd
 import geopandas as gpd
 from typing import Dict, List, Tuple
 from loguru import logger
-from configurations.config import Config
+from src.configurations.config import Config
 
 class TripAssignmentManager:
     def __init__(self):

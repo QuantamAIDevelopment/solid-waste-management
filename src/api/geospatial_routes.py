@@ -19,9 +19,9 @@ import numpy as np
 from shapely.geometry import Point
 from scipy.spatial.distance import cdist
 import math
-from services.vehicle_service import VehicleService
-from api.vehicles_api import router as vehicles_router
-from routing.capacity_optimizer import CapacityRouteOptimizer
+from src.services.vehicle_service import VehicleService
+from src.api.vehicles_api import router as vehicles_router
+from src.routing.capacity_optimizer import CapacityRouteOptimizer
 from loguru import logger
 import warnings
 
@@ -100,8 +100,7 @@ async def optimize_routes(
     roads_file: UploadFile = File(..., description="Roads GeoJSON file"),
     buildings_file: UploadFile = File(..., description="Buildings GeoJSON file"), 
     ward_geojson: UploadFile = File(..., description="Ward boundary GeoJSON file"),
-    ward_no: str = Form(..., description="Ward number to filter vehicles"),
-    vehicles_csv: UploadFile = File(default=None, description="Optional: Custom vehicles CSV file")
+    ward_no: str = Form(..., description="Ward number to filter vehicles")
 ):
     """Upload files and run complete route optimization pipeline."""
     
@@ -138,31 +137,17 @@ async def optimize_routes(
             if roads_gdf.crs != 'EPSG:4326':
                 roads_gdf = roads_gdf.to_crs('EPSG:4326')
             
-            # Get vehicle data - use uploaded CSV or live API data
+            # Get vehicle data from live API
             try:
-                if vehicles_csv and vehicles_csv.filename:
-                    # Use uploaded CSV file
-                    if not vehicles_csv.filename.endswith('.csv'):
-                        raise HTTPException(status_code=400, detail="Vehicles file must be CSV format")
-                    
-                    vehicles_csv_path = os.path.join(temp_dir, "vehicles.csv")
-                    with open(vehicles_csv_path, "wb") as f:
-                        shutil.copyfileobj(vehicles_csv.file, f)
-                    
-                    vehicles_df = pd.read_csv(vehicles_csv_path)
-                    print(f"Loaded {len(vehicles_df)} vehicles from uploaded CSV")
-                    vehicles_path = vehicles_csv_path
-                    vehicle_source = "Uploaded CSV"
-                else:
-                    # Use live API data filtered by ward
-                    vehicles_df = vehicle_service.get_vehicles_by_ward(ward_no.strip())
-                    print(f"Loaded {len(vehicles_df)} vehicles for ward {ward_no}")
-                    
-                    # Save vehicle data for map generation
-                    vehicles_csv_path = os.path.join(temp_dir, "vehicles.csv")
-                    vehicles_df.to_csv(vehicles_csv_path, index=False)
-                    vehicles_path = vehicles_csv_path
-                    vehicle_source = "Live API (Ward Filtered)"
+                # Use live API data filtered by ward
+                vehicles_df = vehicle_service.get_vehicles_by_ward(ward_no.strip())
+                print(f"Loaded {len(vehicles_df)} vehicles for ward {ward_no}")
+                
+                # Save vehicle data for map generation
+                vehicles_csv_path = os.path.join(temp_dir, "vehicles.csv")
+                vehicles_df.to_csv(vehicles_csv_path, index=False)
+                vehicles_path = vehicles_csv_path
+                vehicle_source = "Live API (Ward Filtered)"
                 
                 if len(vehicles_df) == 0:
                     raise HTTPException(status_code=404, detail=f"No vehicles found")
@@ -197,15 +182,42 @@ async def optimize_routes(
             try:
                 with open("output/route_map.html", "w", encoding="utf-8") as f:
                     f.write(map_html)
+                
+                # Open map in browser automatically
+                import webbrowser
+                import time
+                map_path = os.path.abspath("output/route_map.html")
+                webbrowser.open(f"file://{map_path}")
+                print(f"Map opened in browser: {map_path}")
+                
+                # Wait briefly then cleanup
+                time.sleep(5)
+                os.remove("output/route_map.html")
+                print("Map file cleaned up after opening")
             except Exception as save_error:
                 print(f"File save error: {save_error}")
                 raise save_error
             
-            # Save data files for cluster endpoint
+            # Save data files for cluster endpoint (keep them for /clusters access)
             shutil.copy(ward_path, "output/ward.geojson")
             shutil.copy(buildings_path, "output/buildings.geojson")
             shutil.copy(roads_path, "output/roads.geojson")
             shutil.copy(vehicles_path, "output/vehicles.csv")
+            
+            # Save optimization results for cluster endpoint
+            import json
+            with open("output/optimization_result.json", "w") as f:
+                json.dump({
+                    "ward_no": ward_no,
+                    "active_vehicles": optimization_result['active_vehicles'],
+                    "total_houses": optimization_result['total_houses'],
+                    "route_assignments": {k: {
+                        "vehicle_info": v["vehicle_info"],
+                        "trips": v["trips"]
+                    } for k, v in optimization_result['route_assignments'].items()}
+                }, f, indent=2)
+            
+            print("Data files saved for cluster endpoint access")
             
             # Prepare optimized route data for response
             active_vehicles = vehicles_df[
@@ -238,8 +250,7 @@ async def optimize_routes(
                 "status": "success",
                 "message": f"Route optimization completed for ward {ward_no} with {optimization_result['active_vehicles']} active vehicles",
                 "maps": {
-                    "route_map": "/generate-map/route_map",
-                    "cluster_analysis": "/generate-map/cluster_analysis"
+                    "route_map": "/generate-map"
                 },
                 "dashboard": "/cluster-dashboard",
                 "ward_no": ward_no,
@@ -247,7 +258,7 @@ async def optimize_routes(
                 "active_vehicles": optimization_result['active_vehicles'],
                 "total_houses": optimization_result['total_houses'],
                 "total_trips": len(route_summary),
-                "vehicle_source": vehicle_source,
+                "vehicle_source": "Live API (Ward Filtered)",
                 "vehicles": vehicle_data,
                 "route_summary": route_summary,
                 "features": [
@@ -551,19 +562,23 @@ async def get_all_cluster_roads():
         logger.error(f"Error getting all cluster roads: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get all cluster roads: {str(e)}")
 
-@app.get("/generate-map/{map_type}", tags=["maps"])
-async def generate_map(map_type: str):
-    """Generate and return map HTML."""
-    # Allow any map type
-    pass
-    
-    file_path = os.path.join("output", f"{map_type}.html")
+@app.get("/generate-map", tags=["maps"])
+async def generate_map():
+    """Generate and return route map HTML."""
+    file_path = os.path.join("output", "route_map.html")
     
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Map not found. Please upload files first using /optimize-routes")
     
     with open(file_path, "r", encoding="utf-8") as f:
         html_content = f.read()
+    
+    # Delete the file after reading
+    try:
+        os.remove(file_path)
+        print("Map file deleted after serving")
+    except Exception as e:
+        print(f"Warning: Could not delete map file: {e}")
     
     return HTMLResponse(content=html_content)
 
@@ -682,7 +697,7 @@ def generate_map_from_files(ward_file, roads_file, buildings_file, vehicles_file
             vehicle_info = f" ({vehicle.get('vehicle_type', 'N/A')} - ACTIVE)"
         
         cluster_layer = folium.FeatureGroup(
-            name=f"🚛 {vehicle_name}{vehicle_info} - {len(cluster_buildings)} buildings",
+            name=f"🚛 Trip-{cluster_id + 1} ({vehicle_name}) - {len(cluster_buildings)} houses",
             show=True
         )
             
@@ -842,12 +857,12 @@ def generate_map_from_files(ward_file, roads_file, buildings_file, vehicles_file
                 <div style="display:flex;align-items:center;justify-content:space-between;">
                     <div>
                         <span style="color:{colors[cluster_id % len(colors)]};font-size:14px;">●</span> 
-                        <strong>Cluster {cluster_id + 1}</strong>
+                        <strong>Trip-{cluster_id + 1}</strong>
                     </div>
                     <button onclick="toggleCluster({cluster_id})" style="padding:2px 6px;font-size:10px;border:1px solid {colors[cluster_id % len(colors)]};background:white;border-radius:3px;cursor:pointer;">Toggle</button>
                 </div>
                 <div style="font-size:11px;margin-top:5px;">
-                    {len(cluster_buildings)} buildings<br>
+                    Houses: {len(cluster_buildings)}<br>
                     <small>{vehicle_name}{vehicle_details} • {len(cluster_buildings) * 0.5:.1f}km • {len(cluster_buildings) * 3:.0f}min</small>
                 </div>
             </div>
@@ -856,11 +871,11 @@ def generate_map_from_files(ward_file, roads_file, buildings_file, vehicles_file
     panel_html = f'''
     <div style="position:fixed;top:10px;right:10px;width:280px;max-height:70vh;background:white;border:2px solid #333;z-index:9999;font-size:12px;border-radius:5px;box-shadow:0 2px 10px rgba(0,0,0,0.3);">
         <div style="background:#333;color:white;padding:8px;border-radius:3px 3px 0 0;">
-            <strong>📊 Cluster Dashboard</strong>
-            <div style="font-size:10px;margin-top:3px;">{len([c for c in cluster_stats if c])} clusters • {len(buildings_gdf)} buildings</div>
+            <strong>📊 Trip Dashboard</strong>
+            <div style="font-size:10px;margin-top:3px;">{len([c for c in cluster_stats if c])} trips • {len(buildings_gdf)} houses</div>
             <div style="margin-top:5px;">
-                <button onclick="showAllClusters()" style="padding:3px 8px;font-size:10px;border:1px solid white;background:none;color:white;border-radius:3px;cursor:pointer;margin-right:5px;">Show All</button>
-                <button onclick="hideAllClusters()" style="padding:3px 8px;font-size:10px;border:1px solid white;background:none;color:white;border-radius:3px;cursor:pointer;">Hide All</button>
+                <button onclick="showAllTrips()" style="padding:3px 8px;font-size:10px;border:1px solid white;background:none;color:white;border-radius:3px;cursor:pointer;margin-right:5px;">Show All</button>
+                <button onclick="hideAllTrips()" style="padding:3px 8px;font-size:10px;border:1px solid white;background:none;color:white;border-radius:3px;cursor:pointer;">Hide All</button>
             </div>
         </div>
         <div style="padding:8px;max-height:50vh;overflow-y:auto;">
@@ -873,27 +888,27 @@ def generate_map_from_files(ward_file, roads_file, buildings_file, vehicles_file
         var layerControls = document.querySelectorAll('.leaflet-control-layers-selector');
         layerControls.forEach(function(control) {{
             var label = control.nextSibling;
-            if (label && label.textContent.includes('Cluster ' + (clusterId + 1))) {{
+            if (label && label.textContent.includes('Trip-' + (clusterId + 1))) {{
                 control.click();
             }}
         }});
     }}
     
-    function showAllClusters() {{
+    function showAllTrips() {{
         var layerControls = document.querySelectorAll('.leaflet-control-layers-selector');
         layerControls.forEach(function(control) {{
             var label = control.nextSibling;
-            if (label && label.textContent.includes('Cluster') && !control.checked) {{
+            if (label && label.textContent.includes('Trip-') && !control.checked) {{
                 control.click();
             }}
         }});
     }}
     
-    function hideAllClusters() {{
+    function hideAllTrips() {{
         var layerControls = document.querySelectorAll('.leaflet-control-layers-selector');
         layerControls.forEach(function(control) {{
             var label = control.nextSibling;
-            if (label && label.textContent.includes('Cluster') && control.checked) {{
+            if (label && label.textContent.includes('Trip-') && control.checked) {{
                 control.click();
             }}
         }});
@@ -904,6 +919,32 @@ def generate_map_from_files(ward_file, roads_file, buildings_file, vehicles_file
     m.get_root().html.add_child(folium.Element(panel_html))
     
     return m._repr_html_()
+
+@app.delete("/cleanup", tags=["optimization"])
+async def cleanup_data():
+    """Clean up stored cluster data files."""
+    try:
+        files_to_remove = [
+            "output/ward.geojson",
+            "output/buildings.geojson", 
+            "output/roads.geojson",
+            "output/vehicles.csv",
+            "output/optimization_result.json"
+        ]
+        
+        removed_files = []
+        for file_path in files_to_remove:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                removed_files.append(file_path)
+        
+        return JSONResponse({
+            "status": "success",
+            "message": f"Cleaned up {len(removed_files)} files",
+            "removed_files": removed_files
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
 
 @app.get("/")
 async def root():

@@ -7,7 +7,7 @@ from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 from typing import List, Dict, Tuple, Optional
 from shapely.geometry import LineString, Point
-from configurations.config import Config
+from src.configurations.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ class VRPSolver:
         if use_osrm:
             # Use OSRM for more accurate real-world distances
             try:
-                from tools.osrm_routing import OSRMRouter
+                from src.tools.osrm_routing import OSRMRouter
                 osrm = OSRMRouter()
                 
                 locations = [(node.geometry.x, node.geometry.y) for _, node in nodes.iterrows()]

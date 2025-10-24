@@ -4,8 +4,8 @@ import geopandas as gpd
 from sklearn.cluster import KMeans, DBSCAN
 from loguru import logger
 import numpy as np
-from services.vehicle_service import VehicleService
-from clustering.trip_assignment import TripAssignmentManager
+from src.services.vehicle_service import VehicleService
+from src.clustering.trip_assignment import TripAssignmentManager
 
 class BuildingClusterer:
     def __init__(self):

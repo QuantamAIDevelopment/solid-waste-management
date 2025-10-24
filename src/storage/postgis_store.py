@@ -5,8 +5,8 @@ import geopandas as gpd
 import pandas as pd
 from sqlalchemy import create_engine, text
 from geoalchemy2 import Geometry
-from models.blackboard_entry import RouteResult
-from configurations.config import Config
+from src.models.blackboard_entry import RouteResult
+from src.configurations.config import Config
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ import numpy as np
 from typing import List, Dict, Tuple, Any
 from sklearn.cluster import KMeans
 import networkx as nx
-from routing.hierarchical_clustering import HierarchicalSpatialClustering
+from src.routing.hierarchical_clustering import HierarchicalSpatialClustering
 import warnings
 
 # Suppress specific geographic CRS warnings for intentional lat/lon usage

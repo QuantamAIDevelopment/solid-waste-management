@@ -1,7 +1,7 @@
 """Vehicle API endpoints for live vehicle management."""
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
-from services.vehicle_service import VehicleService
+from src.services.vehicle_service import VehicleService
 from typing import List, Dict, Optional
 
 router = APIRouter(prefix="/api/vehicles", tags=["vehicles"])
