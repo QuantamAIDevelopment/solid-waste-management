@@ -21,6 +21,7 @@ from scipy.spatial.distance import cdist
 import math
 from src.services.vehicle_service import VehicleService
 from src.api.vehicles_api import router as vehicles_router
+from src.api.auth_api import router as auth_router
 from src.routing.capacity_optimizer import CapacityRouteOptimizer
 from loguru import logger
 import warnings
@@ -63,8 +64,9 @@ app = FastAPI(
 # Initialize vehicle service
 vehicle_service = VehicleService()
 
-# Include vehicle API routes
+# Include API routes
 app.include_router(vehicles_router)
+app.include_router(auth_router)
 
 # Add CORS middleware
 app.add_middleware(
@@ -150,7 +152,7 @@ async def optimize_routes(
                 vehicle_source = "Live API (Ward Filtered)"
                 
                 if len(vehicles_df) == 0:
-                    raise HTTPException(status_code=404, detail=f"No vehicles found")
+                    raise HTTPException(status_code=404, detail=f"No active vehicles found in ward {ward_no}. Cannot generate routes without vehicles.")
                 
                 # Optimize routes with capacity constraints
                 optimizer = CapacityRouteOptimizer()
@@ -965,10 +967,14 @@ async def root():
                 <li><strong>GET /api/vehicles/live</strong> - Get live vehicle data from SWM API</li>
                 <li><strong>GET /api/vehicles/{vehicle_id}</strong> - Get specific vehicle details</li>
                 <li><strong>PUT /api/vehicles/{vehicle_id}/status</strong> - Update vehicle status</li>
+                <li><strong>GET /api/auth/token/info</strong> - Get current token information and status</li>
+                <li><strong>POST /api/auth/token/refresh</strong> - Force refresh the authentication token</li>
+                <li><strong>GET /api/auth/status</strong> - Get overall authentication status</li>
             </ul>
             <h3>Features:</h3>
             <ul>
                 <li>🌐 <strong>Ward-based Vehicle Filtering</strong> - Real-time vehicle data filtered by ward number</li>
+                <li>🔐 <strong>Automatic Token Management</strong> - Auto-generates and refreshes access tokens</li>
                 <li>✅ Interactive cluster dashboard panel</li>
                 <li>✅ Layer controls to show/hide individual clusters</li>
                 <li>✅ Toggle buttons for each cluster</li>
@@ -977,6 +983,8 @@ async def root():
                 <li>🔐 API Key authentication</li>
                 <li>📱 RESTful vehicle management endpoints</li>
                 <li>🏘️ Ward-based vehicle clustering and optimization</li>
+                <li>⚡ Background token refresh (every 5 minutes)</li>
+                <li>🔄 Automatic retry on token expiry</li>
             </ul>
             <p><a href="/docs" style="background:#007bff;color:white;padding:10px 20px;text-decoration:none;border-radius:5px;">📚 API Documentation</a></p>
         </body>

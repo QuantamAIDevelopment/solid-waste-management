@@ -1,3 +1,6 @@
+# =============================================================================
+# Python
+# =============================================================================
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -102,8 +105,12 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
-# Environments
+# =============================================================================
+# Virtual Environments
+# =============================================================================
 .env
+.env.local
+.env.*.local
 .venv
 env/
 venv/
@@ -111,17 +118,150 @@ ENV/
 env.bak/
 venv.bak/
 ai-env/
+swm-env/
 
-# Spyder project settings
+# =============================================================================
+# IDEs and Editors
+# =============================================================================
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+settings.json
+
+# Spyder
 .spyderproject
 .spyproject
 
-# Rope project settings
+# Rope
 .ropeproject
 
-# mkdocs documentation
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# =============================================================================
+# Operating System Files
+# =============================================================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Linux
+*~
+
+# =============================================================================
+# SWM Project Specific
+# =============================================================================
+# Generated output files
+output/
+results/
+exports/
+
+# Data files (keep structure, ignore content)
+data/*.geojson
+data/*.csv
+data/*.json
+data/*.shp
+data/*.dbf
+data/*.shx
+data/*.prj
+
+# Uploaded files
+uploads/
+temp/
+tmp/
+
+# Log files
+logs/
+*.log
+swm_optimizer.log
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+swm_routes.db
+
+# Generated maps and visualizations
+*.html
+route_map.html
+cluster_analysis.html
+folium_*.html
+
+# Processed GeoJSON outputs
+routes.geojson
+clusters.geojson
+optimization_result.json
+
+# CSV exports
+summary.csv
+vehicle_assignments.csv
+route_summary.csv
+
+# =============================================================================
+# External Services & APIs
+# =============================================================================
+# API keys and tokens (should be in .env)
+*.key
+*.pem
+*.p12
+*.pfx
+
+# OSRM data files
+osrm/
+*.osrm*
+
+# =============================================================================
+# Docker & Deployment
+# =============================================================================
+.dockerignore
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Kubernetes
+*.yaml.local
+*.yml.local
+
+# =============================================================================
+# Development & Testing
+# =============================================================================
+# Test data (keep test structure)
+tests/data/*.geojson
+tests/data/*.csv
+tests/output/
+
+# Temporary test files
+test_*.html
+test_*.json
+test_*.csv
+
+# Performance profiling
+*.prof
+*.pstats
+
+# =============================================================================
+# Documentation
+# =============================================================================
+# mkdocs
 /site
 
+# Sphinx
+docs/_build/
+docs/build/
+
+# =============================================================================
+# Type Checking & Linting
+# =============================================================================
 # mypy
 .mypy_cache/
 .dmypy.json
@@ -136,40 +276,20 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-# PyCharm
-.idea/
-
-# VS Code
-.vscode/
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Project specific
-*.geojson
-*.csv
-uploads/
-temp/
-logs/
-*.db
-*.sqlite
-output/
-*.html
-*.json
-
-# Docker
-.dockerignore
-docker-compose.override.yml
-
-# Temporary files
+# =============================================================================
+# Temporary Files
+# =============================================================================
 *.tmp
 *.temp
 *.swp
 *.swo
-*~
+*.bak
+*.orig
+
+# =============================================================================
+# Backup Files
+# =============================================================================
+*.backup
+*_backup
+*.old
+*_old
